@@ -45,7 +45,7 @@ export async function answerFromBook({ userId, bookId, question, history = [] })
   ).join('\n');
 
   const ai = getGemini();
-  const model = process.env.GEMINI_CHAT_MODEL || 'gemini-2.5-flash';
+  const model = process.env.GEMINI_CHAT_MODEL || 'gemini-3.8-flash';
   const prompt = `You are Litrova, a careful book companion. Answer using only the provided book context. If the context does not contain the answer, say so clearly. Do not invent quotations, page numbers, events, or facts. Explain naturally and cite sources inline as [Source 1], [Source 2].\n\nBOOK: ${owned.rows[0].title}\n\nRECENT CONVERSATION:\n${recentHistory || '(none)'}\n\nBOOK CONTEXT:\n${context}\n\nUSER QUESTION:\n${question}`;
 
   const response = await ai.models.generateContent({ model, contents: prompt });

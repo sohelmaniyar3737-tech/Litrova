@@ -9,7 +9,7 @@ import {
   LogOut, Moon, Sun, Trash2, Download, Headphones, ListFilter, SlidersHorizontal,
   Command, BookMarked, AudioLines, PanelTop, RefreshCw
 } from 'lucide-react';
-import { api, clearSession, getToken, getUser, setSession } from './lib/api';
+import { api, uploadFile, clearSession, getToken, getUser, setSession } from './lib/api';
 
 const NAV = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -127,13 +127,57 @@ function BookCard({ book, index=0 }) { return <motion.article className="book-ca
 function EmptyState({ icon: Icon, title, text, action }) { return <div className="empty-state"><span className="empty-icon"><Icon size={24}/></span><h3>{title}</h3><p>{text}</p>{action}</div>; }
 
 function LibraryPage({ books, loading, reload, notify, setActiveBook }) {
-  const [query,setQuery]=useState(''); const [file,setFile]=useState(null); const [title,setTitle]=useState(''); const [uploading,setUploading]=useState(false); const [filter,setFilter]=useState('all');
-  const filtered=books.filter(b=>b.title?.toLowerCase().includes(query.toLowerCase())&&(filter==='all'||(filter==='ready'?b.status==='ready':b.status!=='ready')));
-  async function upload(e){e.preventDefault();if(!file)return;setUploading(true);try{const body=new FormData();body.append('file',file);body.append('title',title);const result=await api('/books/upload',{method:'POST',body});notify(result.message||'Book uploaded.');setFile(null);setTitle('');await reload();}catch(err){notify(err.message);}finally{setUploading(false);}}
-  return <div className="page-stack"><PageIntro eyebrow="YOUR PERSONAL COLLECTION" title={<>A library of <em>possibilities.</em></>} description="Every book is a new conversation waiting to happen." action={<label className="button-solid upload-label"><Plus size={17}/> Add a book<input type="file" accept="application/pdf,.pdf" hidden onChange={e=>setFile(e.target.files?.[0]||null)}/></label>}/>
-    <div className="library-toolbar"><div className="input-search"><Search size={17}/><input placeholder="Search your library..." value={query} onChange={e=>setQuery(e.target.value)}/></div><div className="filter-control"><ListFilter size={16}/><select value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">All books</option><option value="ready">Ready</option><option value="processing">Processing</option></select></div><button className="icon-btn bordered" onClick={reload} title="Refresh library"><RefreshCw size={17}/></button></div>
-    {file&&<form className="upload-card" onSubmit={upload}><div className="upload-file"><FileText size={20}/><span><b>{file.name}</b><small>{(file.size/1024/1024).toFixed(1)} MB · PDF</small></span></div><input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Book title (optional)"/><button className="button-solid" disabled={uploading}>{uploading?<><LoaderCircle className="spin" size={16}/> Preparing...</>:'Upload & prepare'}</button><button type="button" className="icon-btn" onClick={()=>setFile(null)}><X size={17}/></button></form>}
-    {loading?<div className="loading-state"><LoaderCircle className="spin"/> Loading your library...</div>:filtered.length?<div className="library-grid">{filtered.map((book,i)=><BookCard key={book.id} book={book} index={i}/>)}</div>:<EmptyState icon={Library} title={books.length?'No books match your search.':'Your library is waiting for its first book.'} text={books.length?'Try a different title or filter.':'Add a text-based PDF and Litrova will prepare it for exploration.'} action={!books.length?<label className="button-solid upload-label"><UploadCloud size={16}/> Choose a PDF<input type="file" accept="application/pdf,.pdf" hidden onChange={e=>setFile(e.target.files?.[0]||null)}/></label>:null}/>}
+  const [query,setQuery]=useState('');
+  const [file,setFile]=useState(null);
+  const [title,setTitle]=useState('');
+  const [uploading,setUploading]=useState(false);
+  const [uploadPercent,setUploadPercent]=useState(0);
+  const [filter,setFilter]=useState('all');
+
+  const filtered=books.filter(b=>b.title?.toLowerCase().includes(query.toLowerCase())&&(filter==='all'||(filter==='ready'?b.status==='ready':filter==='processing'?b.status==='processing':b.status==='failed')));
+  const hasProcessing = books.some(book => book.status === 'processing');
+
+  useEffect(() => {
+    if (!hasProcessing) return undefined;
+    const timer = window.setInterval(() => reload(), 2500);
+    return () => window.clearInterval(timer);
+  }, [hasProcessing, reload]);
+
+  async function upload(e) {
+    e.preventDefault();
+    if (!file || uploading) return;
+    setUploading(true);
+    setUploadPercent(0);
+    try {
+      const body=new FormData();
+      body.append('file',file);
+      body.append('title',title);
+      const result=await uploadFile('/books/upload',body,setUploadPercent);
+      setFile(null);
+      setTitle('');
+      await reload();
+      notify(result.message || 'PDF uploaded. Processing has started.');
+    } catch(err) {
+      notify(err.message);
+    } finally {
+      setUploading(false);
+      setUploadPercent(0);
+    }
+  }
+
+  const stageLabel = (book) => ({queued:'Queued',extracting:'Extracting PDF text',embedding:'Generating embeddings',saving:'Saving to your library',ready:'Ready to explore',failed:'Processing failed'}[book.processing_stage] || (book.status === 'processing' ? 'Preparing book' : book.status));
+
+  return <div className="page-stack">
+    <PageIntro eyebrow="YOUR PERSONAL COLLECTION" title={<>A library of <em>possibilities.</em></>} description="Every book is a new conversation waiting to happen." action={<label className="button-solid upload-label"><Plus size={17}/> Add a book<input type="file" accept="application/pdf,.pdf" hidden onChange={e=>setFile(e.target.files?.[0]||null)}/></label>}/>
+    <div className="library-toolbar"><div className="input-search"><Search size={17}/><input placeholder="Search your library..." value={query} onChange={e=>setQuery(e.target.value)}/></div><div className="filter-control"><ListFilter size={16}/><select value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">All books</option><option value="ready">Ready</option><option value="processing">Processing</option><option value="failed">Failed</option></select></div><button className="icon-btn bordered" onClick={reload} title="Refresh library"><RefreshCw size={17}/></button></div>
+    {file&&<form className="upload-card upload-card-stack" onSubmit={upload}>
+      <div className="upload-file"><FileText size={20}/><span><b>{file.name}</b><small>{(file.size/1024/1024).toFixed(1)} MB · PDF</small></span></div>
+      <input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Book title (optional)"/>
+      <button className="button-solid" disabled={uploading}>{uploading?<><LoaderCircle className="spin" size={16}/> Uploading {uploadPercent}%</>:'Upload & prepare'}</button>
+      <button type="button" className="icon-btn" disabled={uploading} onClick={()=>setFile(null)}><X size={17}/></button>
+      {uploading&&<div className="upload-progress"><div className="progress-track"><span style={{width:`${uploadPercent}%`}}/></div><small>Uploading PDF to Litrova… {uploadPercent}%</small></div>}
+    </form>}
+    {loading?<div className="loading-state"><LoaderCircle className="spin"/> Loading your library...</div>:filtered.length?<div className="library-grid">{filtered.map((book,i)=><div className="library-book-wrap" key={book.id}><BookCard book={book} index={i}/>{book.status==='processing'&&<div className="book-processing"><div className="processing-label"><LoaderCircle className="spin" size={14}/><b>{stageLabel(book)}</b><span>{book.processing_percent||0}%</span></div><div className="progress-track"><span style={{width:`${book.processing_percent||0}%`}}/></div><small>{book.processed_chunks||0} / {book.total_chunks||'—'} chunks processed</small></div>}{book.status==='failed'&&<div className="book-failed"><AlertCircle size={14}/><span>{book.processing_error||'Could not prepare this PDF. Delete it and try again.'}</span></div>}</div>)}</div>:<EmptyState icon={Library} title={books.length?'No books match your search.':'Your library is waiting for its first book.'} text={books.length?'Try a different title or filter.':'Add a text-based PDF and Litrova will prepare it for exploration.'} action={!books.length?<label className="button-solid upload-label"><UploadCloud size={16}/> Choose a PDF<input type="file" accept="application/pdf,.pdf" hidden onChange={e=>setFile(e.target.files?.[0]||null)}/></label>:null}/>}
   </div>;
 }
 

@@ -12,6 +12,7 @@ export function clearSession() {
 export function getUser() {
   try { return JSON.parse(localStorage.getItem('litrova_user') || 'null'); } catch { return null; }
 }
+
 export async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (getToken()) headers.Authorization = `Bearer ${getToken()}`;
@@ -20,4 +21,26 @@ export async function api(path, options = {}) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.message || 'Request failed');
   return data;
+}
+
+// XMLHttpRequest is used only for uploads because fetch does not expose upload progress.
+export function uploadFile(path, formData, onProgress = () => {}) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_URL}${path}`);
+    if (getToken()) xhr.setRequestHeader('Authorization', `Bearer ${getToken()}`);
+    xhr.upload.addEventListener('progress', (event) => {
+      if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+    });
+    xhr.addEventListener('load', () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText || '{}'); } catch { /* ignore invalid response */ }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+      else reject(new Error(data.message || 'Upload failed'));
+    });
+    xhr.addEventListener('error', () => reject(new Error('Network error while uploading the PDF.')));
+    xhr.addEventListener('timeout', () => reject(new Error('PDF upload timed out. Please try again.')));
+    xhr.timeout = 120000;
+    xhr.send(formData);
+  });
 }

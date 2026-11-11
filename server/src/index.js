@@ -38,4 +38,16 @@ app.use((error, _req, res, _next) => {
   });
 });
 
-app.listen(port, () => console.log(`Litrova API running at http://localhost:${port}`));
+async function start() {
+  try {
+    // Jobs run in this API process. Mark interrupted jobs clearly after a restart.
+    await pool.query(`UPDATE books SET status = 'failed', processing_stage = 'failed',
+      processing_error = 'Processing was interrupted because the API server restarted. Please upload the PDF again.',
+      updated_at = NOW() WHERE status = 'processing'`);
+  } catch (error) {
+    console.error('Could not reconcile interrupted book jobs:', error.message);
+  }
+  app.listen(port, () => console.log(`Litrova API running at http://localhost:${port}`));
+}
+
+start();
