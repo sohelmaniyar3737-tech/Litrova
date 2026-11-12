@@ -1,0 +1,1 @@
+.bubble-menu{position:relative;z-index:10}.bubble-menu .menu-toggle{border:1px solid var(--line);background:var(--paper);color:var(--ink);border-radius:999px;padding:10px 14px}.bubble-menu .menu-items{display:flex;gap:8px;align-items:center}.bubble-menu a{color:var(--ink)}

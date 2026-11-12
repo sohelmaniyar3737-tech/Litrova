@@ -1,0 +1,6 @@
+
+.border-glow-card{position:relative;isolation:isolate;border-radius:var(--border-radius,16px);padding:1px;background:linear-gradient(135deg,rgba(105,118,93,.5),rgba(184,173,141,.22),rgba(105,118,93,.4));overflow:hidden;transition:transform .25s ease,box-shadow .25s ease;}
+.border-glow-card:hover{transform:translateY(-2px);box-shadow:0 12px 28px rgba(50,55,42,.09)}
+.border-glow-card .edge-light{position:absolute;inset:-1px;border-radius:inherit;pointer-events:none;opacity:var(--edge-proximity,0);background:conic-gradient(from var(--cursor-angle,0deg),transparent 0 68%,rgba(193,177,130,.55) 78%,rgba(105,118,93,.8) 84%,transparent 94%);filter:blur(7px);}
+.border-glow-inner{position:relative;z-index:1;height:100%;border-radius:calc(var(--border-radius,16px) - 1px);background:var(--card-bg,#fbf8f1);overflow:hidden;}
+.border-glow-card--light{color:#22221f}

@@ -1,0 +1,1 @@
+.pill-nav-container{position:relative;z-index:10}.pill-nav{display:flex;align-items:center;gap:8px}.pill-nav a{color:var(--ink)}.pill-nav .mobile-menu-toggle{display:none}@media(max-width:700px){.pill-nav .mobile-menu-toggle{display:inline-flex}.pill-nav .pill-nav-items{display:none}.pill-nav .pill-nav-items.open{display:flex;flex-direction:column}}
