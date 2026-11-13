@@ -44,3 +44,17 @@ export function uploadFile(path, formData, onProgress = () => {}) {
     xhr.send(formData);
   });
 }
+
+
+// Fetch a protected file using the same API base URL and session token.
+export async function fetchFile(path) {
+  const headers = {};
+  if (getToken()) headers.Authorization = `Bearer ${getToken()}`;
+  const response = await fetch(`${API_URL}${path}`, { headers });
+  if (!response.ok) {
+    let message = 'Could not load this document.';
+    try { const data = await response.json(); message = data.message || message; } catch { /* PDF response */ }
+    throw new Error(message);
+  }
+  return response.blob();
+}

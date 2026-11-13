@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 
 
-import { Routes, Route, Navigate, NavLink, Link, Outlet, useNavigate, useLocation, useParams } from 'react-router-dom';
+import { Routes, Route, Navigate, NavLink, Link, Outlet, useNavigate, useLocation, useParams, useSearchParams } from 'react-router-dom';
 
 
 
@@ -43,13 +43,16 @@ import {
 
 
 
-import { api, clearSession, getToken, getUser, setSession } from './lib/api';
+import { api, fetchFile, clearSession, getToken, getUser, setSession } from './lib/api';
+import * as pdfjsLib from 'pdfjs-dist';
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
 
 import BorderGlow from './components/BorderGlow';
 
 import LightRays from './components/LightRays';
 
 import LatticeLoader from './components/LatticeLoader';
+import Stepper, { Step } from './components/Stepper';
 
 
 
@@ -109,7 +112,7 @@ function App() {
 
 
 
-  const [theme, setTheme] = useState(localStorage.getItem('litrova_theme') || 'light');
+  const [theme, setTheme] = useState(localStorage.getItem('litrova_theme') || 'dark');
 
 
 
@@ -245,7 +248,7 @@ function App() {
 
 
 
-        <Route path="reader/:bookId" element={<BookRoutePage kind="reader" books={books} activeBook={activeBook} setActiveBook={setActiveBook} notify={notify}/>} />
+        <Route path="reader/:bookId" element={<BookRoutePage kind="reader" books={books} activeBook={activeBook} setActiveBook={setActiveBook} setBooks={setBooks} notify={notify}/>} />
 
 
 
@@ -434,7 +437,7 @@ function AppShell({ user, books, loadingBooks, reloadBooks, activeBook, setActiv
 
   return <div className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''}`}>
 
-
+    <LightRays className="app-shell-rays" raysOrigin="top-center" raysColor="#a9b99a" raysSpeed={0.18} lightSpread={0.8} rayLength={1.6} followMouse={false} noiseAmount={0.018} distortion={0.008} />
 
     <aside className={`app-sidebar ${mobileOpen ? 'mobile-open' : ''}`}><div className="sidebar-top"><Brand/><button className="icon-btn collapse-btn" title={collapsed?'Expand sidebar':'Collapse sidebar'} onClick={()=>setCollapsed(!collapsed)}>{collapsed?<PanelLeftOpen size={18}/>:<PanelLeftClose size={18}/>}</button><button className="icon-btn mobile-close" onClick={()=>setMobileOpen(false)}><X size={19}/></button></div><div className="sidebar-section-label">YOUR SPACE</div><nav className="primary-nav">{NAV.map(item=><NavLink key={item.to} to={item.to} title={collapsed?item.label:undefined} className={({isActive})=>`nav-item ${isActive?'active':''}`} onClick={()=>setMobileOpen(false)}><item.icon size={18}/><span>{item.label}</span></NavLink>)}</nav><div className="sidebar-section-label books-label"><span>RECENT BOOKS</span><span>{books.length}</span></div><div className="sidebar-book-list">{orderedBooks.slice(0,6).map((book,i)=><div key={book.id} className={`sidebar-book-row ${String(currentBook?.id)===String(book.id)?'active':''} ${pinnedBookIds.includes(String(book.id))?'is-pinned':''}`}><Link to={`/intelligence/${book.id}`} title={collapsed?book.title:undefined} className="sidebar-book" onClick={()=>{chooseBook(book);setMobileOpen(false)}}><span className={`mini-book mini-book-${i%4}`}><BookOpen size={13}/></span><span className="sidebar-book-title">{book.title}</span></Link><button className="sidebar-book-menu-trigger" aria-label={`Options for ${book.title}`} title="Book options" aria-haspopup="menu" aria-expanded={bookMenuId===String(book.id)} onClick={e=>{e.preventDefault();e.stopPropagation();if(bookMenuId===String(book.id)){setBookMenuId(null);return;}const rect=e.currentTarget.getBoundingClientRect();const menuWidth=204;const menuHeight=158;const left=Math.min(rect.right+8,window.innerWidth-menuWidth-12);const top=Math.max(12,Math.min(rect.top-4,window.innerHeight-menuHeight-12));setBookMenuPosition({top,left});setBookMenuId(String(book.id));}}><MoreHorizontal size={17}/></button>{bookMenuId===String(book.id)&&createPortal(<><button className="book-menu-dismiss" aria-label="Close book options" onClick={()=>setBookMenuId(null)}/><div className="book-options-menu" role="menu" style={{top:bookMenuPosition.top,left:bookMenuPosition.left}}><button role="menuitem" onClick={()=>togglePinnedBook(book.id)}><Pin size={15}/>{pinnedBookIds.includes(String(book.id))?'Unpin':'Pin'}</button><button role="menuitem" onClick={()=>renameBook(book)}><Pencil size={15}/>Rename</button><div className="book-menu-divider"/><button role="menuitem" className="danger" onClick={()=>deleteBook(book)}><Trash2 size={15}/>Delete</button></div></>,document.body)}</div>)}{!books.length && !loadingBooks && <span className="sidebar-empty">{collapsed?'—':'Your books will appear here'}</span>}</div><div className="sidebar-bottom"><NavLink to="/settings" title={collapsed?'Settings':undefined} className={({isActive})=>`nav-item ${isActive?'active':''}`} onClick={()=>setMobileOpen(false)}><Settings size={18}/><span>Settings</span></NavLink><div className="profile-mini"><span className="avatar">{user.name?.[0]?.toUpperCase()||'L'}</span><span className="profile-name"><b>{user.name || 'Reader'}</b><small>Personal library</small></span><button className="icon-btn signout-btn" title="Sign out" onClick={onLogout}><LogOut size={16}/></button></div></div></aside>
 
@@ -556,7 +559,7 @@ function LibraryPage({ books, loading, reload, notify, setActiveBook }) {
 
 
 
-  async function upload(e){e.preventDefault();if(!file)return;setUploading(true);try{const body=new FormData();body.append('file',file);body.append('title',title);const result=await api('/books/upload',{method:'POST',body});notify(result.message||'Book uploaded.');setFile(null);setTitle('');await reload();}catch(err){notify(err.message);}finally{setUploading(false);}}
+  async function uploadSelectedFile(){if(!file)return;setUploading(true);try{const body=new FormData();body.append('file',file);body.append('title',title);const result=await api('/books/upload',{method:'POST',body});notify(result.message||'Book uploaded.');setFile(null);setTitle('');await reload();}catch(err){notify(err.message);}finally{setUploading(false);}}
 
 
 
@@ -568,7 +571,7 @@ function LibraryPage({ books, loading, reload, notify, setActiveBook }) {
 
 
 
-    {file&&<form className="upload-card" onSubmit={upload}><div className="upload-file"><FileText size={20}/><span><b>{file.name}</b><small>{(file.size/1024/1024).toFixed(1)} MB · PDF</small></span></div><input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Book title (optional)"/><button className="button-solid" disabled={uploading}>{uploading?<LatticeLoader label="Preparing PDF" color="#fffdf8" cellSize={4} fontSize={10} showTimer={false}/>: 'Upload & prepare'}</button><button type="button" className="icon-btn" onClick={()=>setFile(null)}><X size={17}/></button></form>}
+    {file&&<section className="upload-stepper-card" aria-label="Prepare a book upload"><div className="upload-stepper-heading"><div><span className="eyebrow">ADD TO YOUR LIBRARY</span><h3>Let's prepare your book.</h3></div><button type="button" className="icon-btn" aria-label="Cancel upload" onClick={()=>{setFile(null);setTitle('');}}><X size={17}/></button></div><Stepper initialStep={1} onFinalStepCompleted={uploadSelectedFile} nextButtonText="Continue" backButtonText="Back" nextButtonProps={{disabled:uploading}}><Step><div className="upload-step-content"><span className="upload-step-number">01 / FILE</span><h4>Your document is selected</h4><div className="upload-file upload-file-step"><FileText size={22}/><span><b>{file.name}</b><small>{(file.size/1024/1024).toFixed(1)} MB · PDF document</small></span></div><p>Litrova will extract the text and prepare it for book conversations.</p></div></Step><Step><div className="upload-step-content"><span className="upload-step-number">02 / DETAILS</span><h4>Give your book a name</h4><label className="upload-title-field">Book title <span>Optional</span><input value={title} onChange={e=>setTitle(e.target.value)} maxLength={180} placeholder="e.g. Dracula by Bram Stoker"/></label><p>You can leave this blank and use the uploaded file name.</p></div></Step><Step><div className="upload-step-content"><span className="upload-step-number">03 / READY</span><h4>Everything looks ready.</h4><div className="upload-review-row"><FileText size={19}/><div><b>{title.trim()||file.name.replace(/\.pdf$/i,'')}</b><small>{(file.size/1024/1024).toFixed(1)} MB · PDF</small></div></div><p>Choose Complete to upload your document and start processing it.</p>{uploading&&<div className="upload-processing"><LatticeLoader label="Preparing your book" color="#69765d" cellSize={5} fontSize={11} showTimer={false}/></div>}</div></Step></Stepper></section>}
 
 
 
@@ -588,7 +591,7 @@ function LibraryPage({ books, loading, reload, notify, setActiveBook }) {
 
 
 
-function BookRoutePage({ kind, books, activeBook, setActiveBook, notify }) {
+function BookRoutePage({ kind, books, activeBook, setActiveBook, setBooks, notify }) {
 
 
 
@@ -608,7 +611,7 @@ function BookRoutePage({ kind, books, activeBook, setActiveBook, notify }) {
 
 
 
-  if(kind==='reader')return <ReaderPage book={book} notify={notify}/>;
+  if(kind==='reader')return <ReaderPage book={book} notify={notify} onPageCount={count=>setBooks?.(current=>current.map(item=>String(item.id)===String(book.id)?{...item,page_count:count}:item))}/>;
 
 
 
@@ -624,24 +627,181 @@ function BookRoutePage({ kind, books, activeBook, setActiveBook, notify }) {
 
 
 
-function ReaderPage({ book, notify }) {
+function ReaderPage({ book, notify, onPageCount }) {
+  const [searchParams] = useSearchParams();
+  const initialPage = Math.max(1, Number(searchParams.get('page')) || 1);
+  const [page, setPage] = useState(initialPage);
+  const [pageInput, setPageInput] = useState(String(initialPage));
+  const [pageCount, setPageCount] = useState(Number(book.page_count) || 0);
+  const [note, setNote] = useState('');
+  const [saved, setSaved] = useState(false);
+  const [pdfLoading, setPdfLoading] = useState(true);
+  const [pdfError, setPdfError] = useState('');
+  const [pdfDocument, setPdfDocument] = useState(null);
+  const [rendering, setRendering] = useState(false);
+  const canvasRef = useRef(null);
+  const renderTaskRef = useRef(null);
 
+  useEffect(() => {
+    let active = true;
+    let loadedDocument;
+    setPdfLoading(true);
+    setPdfError('');
+    setPdfDocument(null);
+    fetchFile(`/books/${book.id}/file`)
+      .then(blob => blob.arrayBuffer())
+      .then(data => pdfjsLib.getDocument({ data }).promise)
+      .then(async doc => {
+        loadedDocument = doc;
+        if (!active) { await doc.destroy(); return; }
+        setPdfDocument(doc);
+        setPageCount(doc.numPages);
+        const correctedPage = Math.min(Math.max(1, initialPage), doc.numPages);
+        setPage(correctedPage);
+        setPageInput(String(correctedPage));
+        if (Number(book.page_count) !== doc.numPages) {
+          try {
+            await api(`/books/${book.id}/page-count`, { method: 'PATCH', body: JSON.stringify({ pageCount: doc.numPages }) });
+            onPageCount?.(doc.numPages);
+          } catch (error) {
+            console.warn('Could not sync PDF page count:', error.message);
+            onPageCount?.(doc.numPages);
+          }
+        }
+      })
+      .catch(error => { if (active) setPdfError(error.message || 'Could not read this PDF.'); })
+      .finally(() => { if (active) setPdfLoading(false); });
+    return () => {
+      active = false;
+      if (renderTaskRef.current) renderTaskRef.current.cancel();
+      if (loadedDocument) loadedDocument.destroy();
+    };
+  }, [book.id]);
 
+  useEffect(() => {
+    let cancelled = false;
+    async function renderCurrentPage() {
+      if (!pdfDocument || !canvasRef.current) return;
+      setRendering(true);
+      try {
+        if (renderTaskRef.current) {
+          try { renderTaskRef.current.cancel(); } catch { /* previous render may have completed */ }
+        }
+        const pdfPage = await pdfDocument.getPage(page);
+        if (cancelled) return;
+        const canvas = canvasRef.current;
+        const context = canvas.getContext('2d');
+        const baseViewport = pdfPage.getViewport({ scale: 1 });
+        const maxWidth = Math.min(850, Math.max(320, canvas.parentElement.clientWidth - 36));
+        const scale = Math.min(maxWidth / baseViewport.width, 1.8);
+        const viewport = pdfPage.getViewport({ scale });
+        const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+        canvas.width = Math.floor(viewport.width * pixelRatio);
+        canvas.height = Math.floor(viewport.height * pixelRatio);
+        canvas.style.width = `${Math.floor(viewport.width)}px`;
+        canvas.style.height = `${Math.floor(viewport.height)}px`;
+        context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+        renderTaskRef.current = pdfPage.render({ canvasContext: context, viewport });
+        await renderTaskRef.current.promise;
+      } catch (error) {
+        if (error?.name !== 'RenderingCancelledException' && !cancelled) setPdfError(error.message || 'Could not render this page.');
+      } finally {
+        if (!cancelled) setRendering(false);
+      }
+    }
+    renderCurrentPage();
+    return () => { cancelled = true; if (renderTaskRef.current) renderTaskRef.current.cancel(); };
+  }, [pdfDocument, page]);
 
-  const [page,setPage]=useState(1);const [font,setFont]=useState(18);const [note,setNote]=useState('');const [saved,setSaved]=useState(false);
+  useEffect(() => {
+    try {
+      const bookmarks = JSON.parse(localStorage.getItem('litrova_bookmarks') || '[]');
+      setSaved(bookmarks.some(item => String(item.bookId) === String(book.id) && Number(item.page) === page));
+    } catch { setSaved(false); }
+  }, [book.id, page]);
 
+  function goToPage(value) {
+    const requested = Number.parseInt(String(value), 10);
+    if (!Number.isInteger(requested) || requested < 1 || requested > pageCount) {
+      notify(`Enter a page number between 1 and ${pageCount || 'the available pages'}.`);
+      setPageInput(String(page));
+      return;
+    }
+    setPage(requested);
+    setPageInput(String(requested));
+  }
 
+  function toggleBookmark() {
+    let current = [];
+    try { current = JSON.parse(localStorage.getItem('litrova_bookmarks') || '[]'); } catch { /* reset malformed local data */ }
+    const exists = current.some(item => String(item.bookId) === String(book.id) && Number(item.page) === page);
+    const next = exists
+      ? current.filter(item => !(String(item.bookId) === String(book.id) && Number(item.page) === page))
+      : [{ bookId: book.id, bookTitle: book.title, page, createdAt: new Date().toISOString() }, ...current];
+    localStorage.setItem('litrova_bookmarks', JSON.stringify(next));
+    setSaved(!exists);
+    notify(exists ? 'Bookmark removed.' : `Page ${page} bookmarked.`);
+  }
 
-  const max=Number(book.page_count)||1;
+  function saveNote() {
+    if (!note.trim()) return;
+    let old = [];
+    try { old = JSON.parse(localStorage.getItem('litrova_notes') || '[]'); } catch { /* reset malformed local data */ }
+    localStorage.setItem('litrova_notes', JSON.stringify([
+      { bookId: book.id, bookTitle: book.title, page, note: note.trim(), createdAt: new Date().toISOString() },
+      ...old
+    ]));
+    setNote('');
+    notify('Note saved to My Workspace.');
+  }
 
+  return <div className="reader-workspace">
+    <div className="reader-toolbar">
+      <div><span className="eyebrow">READING ROOM</span><b>{book.title}</b><small className="reader-status">{pdfLoading ? 'Opening your PDF…' : pdfError ? 'PDF unavailable' : `${pageCount} pages · Page ${page} of ${pageCount}`}</small></div>
+      <div className="reader-tools">
+        <button className={`icon-btn bordered ${saved ? 'is-saved' : ''}`} title={saved ? 'Remove bookmark' : 'Bookmark page'} onClick={toggleBookmark}><Bookmark size={17} fill={saved ? 'currentColor' : 'none'}/></button>
+        <button className="icon-btn bordered" title="Download original PDF" onClick={async()=>{try{const blob=await fetchFile(`/books/${book.id}/file`);const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download=book.original_file_name||`${book.title}.pdf`;link.click();URL.revokeObjectURL(url);}catch(error){notify(error.message);}}}><Download size={17}/></button>
+      </div>
+    </div>
 
+    <div className="reader-layout">
+      <aside className="reader-toc">
+        <span className="eyebrow">CONTENTS</span>
+        <b>Document navigation</b>
+        <p>Move through your book one page at a time.</p>
+        <div className="reader-page-jump">
+          <label htmlFor="reader-page-input">Go to page</label>
+          <form onSubmit={event => { event.preventDefault(); goToPage(pageInput); }}>
+            <input id="reader-page-input" type="number" inputMode="numeric" min="1" max={pageCount || undefined} step="1" value={pageInput} onChange={event => setPageInput(event.target.value)} disabled={pdfLoading || !!pdfError}/>
+            <button className="button-solid" type="submit" disabled={pdfLoading || !!pdfError}>Go</button>
+          </form>
+        </div>
+        <div className="toc-placeholder"><BookOpen size={16}/>{pageCount ? `${pageCount} pages in this document` : 'Reading PDF details…'}</div>
+      </aside>
 
-  return <div className="reader-workspace"><div className="reader-toolbar"><div><span className="eyebrow">READING ROOM</span><b>{book.title}</b></div><div className="reader-tools"><button className="icon-btn bordered" title="Decrease text size" onClick={()=>setFont(Math.max(14,font-1))}>A−</button><button className="icon-btn bordered" title="Increase text size" onClick={()=>setFont(Math.min(26,font+1))}>A+</button><button className={`icon-btn bordered ${saved?'is-saved':''}`} title="Bookmark page" onClick={()=>{setSaved(!saved);notify(saved?'Bookmark removed':'Page bookmarked');}}><Bookmark size={17}/></button></div></div><div className="reader-layout"><aside className="reader-toc"><span className="eyebrow">CONTENTS</span><b>Document navigation</b><p>Chapter navigation will appear when the PDF outline is available.</p><div className="toc-placeholder"><ListFilter size={17}/> No table of contents detected yet</div></aside><section className="reader-page-area"><div className="paper-page"><span className="paper-kicker">{book.title}</span><h2>Let the reading begin.</h2><p style={{fontSize:font}}>Your uploaded document is stored and processed by Litrova. The embedded PDF reader and page rendering will be connected in the next implementation pass. For now, use the page controls to prepare the reading workspace.</p><p className="paper-muted">A good question can open a page in an entirely new way.</p><span className="paper-page-number">{page}</span></div><div className="page-controls"><button className="button-outline" disabled={page<=1} onClick={()=>setPage(p=>p-1)}>Previous</button><span>Page <b>{page}</b> of {max}</span><button className="button-outline" disabled={page>=max} onClick={()=>setPage(p=>p+1)}>Next page</button></div></section><aside className="reader-notes"><span className="eyebrow">YOUR NOTES</span><b>Keep a thought</b><textarea placeholder="Write a note about this page..." value={note} onChange={e=>setNote(e.target.value)}/><button className="button-solid" onClick={()=>{if(!note.trim())return;const old=JSON.parse(localStorage.getItem('litrova_notes')||'[]');localStorage.setItem('litrova_notes',JSON.stringify([{bookId:book.id,bookTitle:book.title,page,note,createdAt:new Date().toISOString()},...old]));setNote('');notify('Note saved to My Workspace.');}}>Save note</button><p>Notes are saved locally in this starter. Cloud sync will be added with the workspace API.</p></aside></div></div>;
+      <section className="reader-page-area">
+        <div className="litrova-pdf-page">
+          {pdfLoading && <div className="pdf-viewer-state"><LatticeLoader label="Opening your book" color="#69765d" cellSize={6} fontSize={12} showTimer={false}/></div>}
+          {!pdfLoading && pdfError && <div className="pdf-viewer-state pdf-viewer-error"><AlertCircle size={25}/><h3>Could not open this PDF</h3><p>{pdfError}</p><button className="button-outline" onClick={()=>window.location.reload()}><RefreshCw size={15}/> Try again</button></div>}
+          {!pdfLoading && !pdfError && <><canvas ref={canvasRef} className="litrova-pdf-canvas" aria-label={`Page ${page} of ${pageCount}`}/>{rendering && <span className="pdf-rendering-indicator">Rendering page…</span>}</>}
+        </div>
+        <div className="page-controls">
+          <button className="button-outline" disabled={page <= 1 || pdfLoading || !!pdfError} onClick={() => goToPage(page - 1)}>← Previous</button>
+          <span>Page <b>{page}</b> of <b>{pageCount || '—'}</b></span>
+          <button className="button-outline" disabled={page >= pageCount || pdfLoading || !!pdfError} onClick={() => goToPage(page + 1)}>Next page →</button>
+        </div>
+      </section>
 
-
-
+      <aside className="reader-notes">
+        <span className="eyebrow">YOUR NOTES</span>
+        <b>Keep a thought</b>
+        <textarea placeholder={`Write a note about page ${page}...`} value={note} onChange={event => setNote(event.target.value)}/>
+        <button className="button-solid" onClick={saveNote} disabled={!note.trim()}>Save note</button>
+        <p>Notes are saved in this browser and appear in My Workspace.</p>
+      </aside>
+    </div>
+  </div>;
 }
-
 
 
 function IntelligencePage({ book, notify }) {
@@ -1252,7 +1412,19 @@ function VoicePage({ book }) { const [listening,setListening]=useState(false);re
 
 
 
-function WorkspacePage({ books }) { const notes=JSON.parse(localStorage.getItem('litrova_notes')||'[]');const [tab,setTab]=useState('notes');return <div className="page-stack"><PageIntro eyebrow="YOUR KNOWLEDGE, KEPT" title={<>A space for <em>what stays.</em></>} description="Bring together the passages, thoughts and answers worth returning to."/><div className="workspace-tabs">{[{k:'notes',t:'Notes',i:NotebookTabs},{k:'bookmarks',t:'Bookmarks',i:Bookmark},{k:'highlights',t:'Highlights',i:Highlighter},{k:'answers',t:'Saved answers',i:Sparkles}].map(x=><button className={tab===x.k?'active':''} key={x.k} onClick={()=>setTab(x.k)}><x.i size={16}/>{x.t}</button>)}</div>{tab==='notes'?notes.length?<div className="saved-notes">{notes.map((n,i)=><article key={i}><span className="eyebrow">{n.bookTitle} · PAGE {n.page}</span><p>{n.note}</p><small>{new Date(n.createdAt).toLocaleDateString()}</small></article>)}</div>:<EmptyState icon={NotebookTabs} title="Your notes will live here." text="Save thoughts from Reader Studio and return to them whenever you need."/>:<EmptyState icon={tab==='bookmarks'?Bookmark:tab==='highlights'?Highlighter:Sparkles} title="Nothing saved here yet." text="This collection will fill up as you explore and save useful ideas."/>}</div>; }
+function WorkspacePage({ books }) {
+  const notes = JSON.parse(localStorage.getItem('litrova_notes') || '[]');
+  const bookmarks = JSON.parse(localStorage.getItem('litrova_bookmarks') || '[]');
+  const [tab, setTab] = useState('notes');
+  const bookMap = new Map(books.map(book => [String(book.id), book]));
+  return <div className="page-stack">
+    <PageIntro eyebrow="YOUR KNOWLEDGE, KEPT" title={<>A space for <em>what stays.</em></>} description="Bring together the passages, thoughts and answers worth returning to."/>
+    <div className="workspace-tabs">{[{k:'notes',t:'Notes',i:NotebookTabs},{k:'bookmarks',t:'Bookmarks',i:Bookmark},{k:'highlights',t:'Highlights',i:Highlighter},{k:'answers',t:'Saved answers',i:Sparkles}].map(item=><button className={tab===item.k?'active':''} key={item.k} onClick={()=>setTab(item.k)}><item.i size={16}/>{item.t}</button>)}</div>
+    {tab === 'notes' ? notes.length ? <div className="saved-notes">{notes.map((item,index)=><article key={`${item.bookId}-${item.createdAt}-${index}`}><span className="eyebrow">{item.bookTitle} · PAGE {item.page}</span><p>{item.note}</p><small>{new Date(item.createdAt).toLocaleDateString()}</small></article>)}</div> : <EmptyState icon={NotebookTabs} title="Your notes will live here." text="Save thoughts from Reader Studio and return to them whenever you need."/> :
+    tab === 'bookmarks' ? bookmarks.length ? <div className="saved-notes">{bookmarks.map((item,index)=><article className="saved-bookmark" key={`${item.bookId}-${item.page}-${index}`}><span className="eyebrow">{item.bookTitle} · PAGE {item.page}</span><p>Bookmarked page {item.page}</p>{bookMap.has(String(item.bookId)) && <Link className="text-action" to={`/reader/${item.bookId}?page=${item.page}`}>Open this page <ArrowUpRight size={14}/></Link>}</article>)}</div> : <EmptyState icon={Bookmark} title="No bookmarked pages yet." text="Bookmark a page in Reader Studio to find it here."/> :
+    <EmptyState icon={tab==='highlights'?Highlighter:Sparkles} title="Nothing saved here yet." text="This collection will fill up as you explore and save useful ideas."/>}
+  </div>;
+}
 
 
 
