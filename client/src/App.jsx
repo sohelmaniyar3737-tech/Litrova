@@ -45,6 +45,7 @@ import {
 
 import { api, fetchFile, clearSession, getToken, getUser, setSession } from './lib/api';
 import * as pdfjsLib from 'pdfjs-dist';
+import { TextLayer } from 'pdfjs-dist';
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
 
 import BorderGlow from './components/BorderGlow';
@@ -535,7 +536,123 @@ function PageIntro({ eyebrow, title, description, action }) { return <div classN
 
 
 
-function BookCard({ book, index=0 }) { return <BorderGlow className="book-card-glow" backgroundColor="#fbf8f1" borderRadius={12} glowRadius={16} glowIntensity={0.32} glowColor="84 18 52" colors={["#69765d", "#b8ad8d", "#d8dfce"]}><motion.article className="book-card" initial={{opacity:0,y:12}} animate={{opacity:1,y:0}} transition={{delay:index*.05}}><Link to={`/intelligence/${book.id}`} className={`book-cover-card cover-tone-${index%4}`}><span className="cover-monogram">L.</span><BookOpen size={27}/><b>{book.title}</b><small>LITROVA LIBRARY</small></Link><div className="book-card-info"><b>{book.title}</b><small>{book.page_count || '—'} pages · {book.status==='ready'?'Ready':book.status}</small><Link to={`/reader/${book.id}`} className="text-action">Open book <ArrowUpRight size={14}/></Link></div></motion.article></BorderGlow>; }
+// Cover thumbnails are shared across Dashboard and Library and persisted in localStorage.
+// This prevents downloading and rendering the same PDF again on every route change.
+const bookCoverCache = new Map();
+const bookCoverRequests = new Map();
+
+function getStoredBookCover(bookId) {
+  const key = String(bookId);
+  if (bookCoverCache.has(key)) return bookCoverCache.get(key);
+  try {
+    const stored = localStorage.getItem(`litrova_cover_${key}`);
+    if (stored) {
+      bookCoverCache.set(key, stored);
+      return stored;
+    }
+  } catch (error) {
+    console.warn('Could not read cached book cover:', error);
+  }
+  return '';
+}
+
+function createBookCover(book) {
+  const key = String(book.id);
+  const cached = getStoredBookCover(key);
+  if (cached) return Promise.resolve(cached);
+  if (bookCoverRequests.has(key)) return bookCoverRequests.get(key);
+
+  const request = (async () => {
+    let pdfDocument;
+    try {
+      const file = await fetchFile(`/books/${book.id}/file`);
+      const data = await file.arrayBuffer();
+      pdfDocument = await pdfjsLib.getDocument({ data }).promise;
+      const firstPage = await pdfDocument.getPage(1);
+      const baseViewport = firstPage.getViewport({ scale: 1 });
+      const scale = Math.min(280 / baseViewport.width, 380 / baseViewport.height, 0.72);
+      const viewport = firstPage.getViewport({ scale });
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d', { alpha: false });
+      if (!context) throw new Error('Canvas is unavailable.');
+
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      await firstPage.render({ canvasContext: context, viewport }).promise;
+      const image = canvas.toDataURL('image/jpeg', 0.76);
+      canvas.width = 0;
+      canvas.height = 0;
+
+      // Keep an in-memory copy even if browser storage is full or unavailable.
+      bookCoverCache.set(key, image);
+      try {
+        localStorage.setItem(`litrova_cover_${key}`, image);
+      } catch (storageError) {
+        console.warn('Book cover generated but could not be persisted:', storageError);
+      }
+      return image;
+    } finally {
+      if (pdfDocument) {
+        try { await pdfDocument.destroy(); } catch { /* document may already be closed */ }
+      }
+    }
+  })();
+
+  bookCoverRequests.set(key, request);
+  request.finally(() => {
+    if (bookCoverRequests.get(key) === request) bookCoverRequests.delete(key);
+  }).catch(() => {});
+  return request;
+}
+
+function BookCoverThumbnail({ book, index = 0 }) {
+  const [cover, setCover] = useState(() => getStoredBookCover(book.id));
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    setFailed(false);
+    const cached = getStoredBookCover(book.id);
+    if (cached) {
+      setCover(cached);
+      return () => { active = false; };
+    }
+
+    setCover('');
+    createBookCover(book)
+      .then(image => { if (active) setCover(image); })
+      .catch(error => {
+        console.warn(`Could not create cover thumbnail for ${book.title}:`, error);
+        if (active) setFailed(true);
+      });
+
+    return () => { active = false; };
+  }, [book.id]);
+
+  return (
+    <Link to={`/intelligence/${book.id}`} className={`book-cover-card cover-tone-${index % 4} ${cover ? 'has-real-cover' : ''}`} aria-label={`Open ${book.title}`}>
+      {cover ? (
+        <img className="book-cover-thumbnail" src={cover} alt={`${book.title} front cover`} loading="eager" />
+      ) : (
+        <>
+          <span className="cover-monogram">L.</span>
+          <BookOpen size={27}/>
+          <b>{book.title}</b>
+          <small>{failed ? 'LITROVA LIBRARY' : 'LOADING COVER'}</small>
+        </>
+      )}
+    </Link>
+  );
+}
+
+function BookCard({ book, index=0 }) {
+  return <BorderGlow className="book-card-glow" backgroundColor="#fbf8f1" borderRadius={12} glowRadius={16} glowIntensity={0.32} glowColor="84 18 52" colors={["#69765d", "#b8ad8d", "#d8dfce"]}>
+    <motion.article className="book-card" initial={{opacity:0,y:12}} animate={{opacity:1,y:0}} transition={{delay:index*.05}}>
+      <BookCoverThumbnail book={book} index={index}/>
+      <div className="book-card-info"><b>{book.title}</b><small>{book.page_count || '—'} pages · {book.status==='ready'?'Ready':book.status}</small><Link to={`/reader/${book.id}`} className="text-action">Open book <ArrowUpRight size={14}/></Link></div>
+    </motion.article>
+  </BorderGlow>;
+}
 
 
 
@@ -634,12 +751,14 @@ function ReaderPage({ book, notify, onPageCount }) {
   const [pageInput, setPageInput] = useState(String(initialPage));
   const [pageCount, setPageCount] = useState(Number(book.page_count) || 0);
   const [note, setNote] = useState('');
+  const [selectedText, setSelectedText] = useState('');
   const [saved, setSaved] = useState(false);
   const [pdfLoading, setPdfLoading] = useState(true);
   const [pdfError, setPdfError] = useState('');
   const [pdfDocument, setPdfDocument] = useState(null);
   const [rendering, setRendering] = useState(false);
   const canvasRef = useRef(null);
+  const textLayerRef = useRef(null);
   const renderTaskRef = useRef(null);
 
   useEffect(() => {
@@ -681,7 +800,7 @@ function ReaderPage({ book, notify, onPageCount }) {
   useEffect(() => {
     let cancelled = false;
     async function renderCurrentPage() {
-      if (!pdfDocument || !canvasRef.current) return;
+      if (!pdfDocument || !canvasRef.current || !textLayerRef.current) return;
       setRendering(true);
       try {
         if (renderTaskRef.current) {
@@ -690,19 +809,34 @@ function ReaderPage({ book, notify, onPageCount }) {
         const pdfPage = await pdfDocument.getPage(page);
         if (cancelled) return;
         const canvas = canvasRef.current;
+        const textLayerElement = textLayerRef.current;
         const context = canvas.getContext('2d');
         const baseViewport = pdfPage.getViewport({ scale: 1 });
-        const maxWidth = Math.min(850, Math.max(320, canvas.parentElement.clientWidth - 36));
+        const pageFrame = canvas.closest('.litrova-pdf-page');
+        const availableWidth = Math.max(240, (pageFrame?.clientWidth || 900) - 26);
+        const maxWidth = Math.min(850, availableWidth);
         const scale = Math.min(maxWidth / baseViewport.width, 1.8);
         const viewport = pdfPage.getViewport({ scale });
         const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+
         canvas.width = Math.floor(viewport.width * pixelRatio);
         canvas.height = Math.floor(viewport.height * pixelRatio);
         canvas.style.width = `${Math.floor(viewport.width)}px`;
         canvas.style.height = `${Math.floor(viewport.height)}px`;
+        textLayerElement.replaceChildren();
+        textLayerElement.style.width = `${Math.floor(viewport.width)}px`;
+        textLayerElement.style.height = `${Math.floor(viewport.height)}px`;
+        textLayerElement.style.setProperty('--scale-factor', String(scale));
+
         context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
         renderTaskRef.current = pdfPage.render({ canvasContext: context, viewport });
         await renderTaskRef.current.promise;
+        if (cancelled) return;
+
+        const textContent = await pdfPage.getTextContent();
+        if (cancelled) return;
+        const textLayer = new TextLayer({ textContentSource: textContent, container: textLayerElement, viewport });
+        await textLayer.render();
       } catch (error) {
         if (error?.name !== 'RenderingCancelledException' && !cancelled) setPdfError(error.message || 'Could not render this page.');
       } finally {
@@ -719,6 +853,32 @@ function ReaderPage({ book, notify, onPageCount }) {
       setSaved(bookmarks.some(item => String(item.bookId) === String(book.id) && Number(item.page) === page));
     } catch { setSaved(false); }
   }, [book.id, page]);
+
+  useEffect(() => {
+    setSelectedText('');
+    setNote('');
+    window.getSelection()?.removeAllRanges();
+  }, [page]);
+
+  function captureSelection() {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || !selection.rangeCount) return;
+
+    const range = selection.getRangeAt(0);
+    const textLayer = textLayerRef.current;
+    const anchorInsideLayer = textLayer?.contains(selection.anchorNode);
+    const focusInsideLayer = textLayer?.contains(selection.focusNode);
+    const rangeInsideLayer = textLayer?.contains(range.commonAncestorContainer);
+    if (!anchorInsideLayer && !focusInsideLayer && !rangeInsideLayer) return;
+
+    // PDF text is often split into many positioned spans. Normalize only
+    // repeated spacing so the saved passage reads naturally in Notes.
+    const text = selection.toString()
+      .replace(/\u00a0/g, ' ')
+      .replace(/[ \t]+\n/g, '\n')
+      .trim();
+    if (text) setSelectedText(text);
+  }
 
   function goToPage(value) {
     const requested = Number.parseInt(String(value), 10);
@@ -744,15 +904,20 @@ function ReaderPage({ book, notify, onPageCount }) {
   }
 
   function saveNote() {
-    if (!note.trim()) return;
+    const cleanNote = note.trim();
+    const cleanSelection = selectedText.trim();
+    if (!cleanNote && !cleanSelection) return;
     let old = [];
     try { old = JSON.parse(localStorage.getItem('litrova_notes') || '[]'); } catch { /* reset malformed local data */ }
     localStorage.setItem('litrova_notes', JSON.stringify([
-      { bookId: book.id, bookTitle: book.title, page, note: note.trim(), createdAt: new Date().toISOString() },
+      { id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`, bookId: book.id, bookTitle: book.title, page, selectedText: cleanSelection, note: cleanNote, createdAt: new Date().toISOString() },
       ...old
     ]));
+    window.dispatchEvent(new Event('litrova-notes-updated'));
+    setSelectedText('');
     setNote('');
-    notify('Note saved to My Workspace.');
+    window.getSelection()?.removeAllRanges();
+    notify('Passage and note saved to My Workspace.');
   }
 
   return <div className="reader-workspace">
@@ -783,7 +948,11 @@ function ReaderPage({ book, notify, onPageCount }) {
         <div className="litrova-pdf-page">
           {pdfLoading && <div className="pdf-viewer-state"><LatticeLoader label="Opening your book" color="#69765d" cellSize={6} fontSize={12} showTimer={false}/></div>}
           {!pdfLoading && pdfError && <div className="pdf-viewer-state pdf-viewer-error"><AlertCircle size={25}/><h3>Could not open this PDF</h3><p>{pdfError}</p><button className="button-outline" onClick={()=>window.location.reload()}><RefreshCw size={15}/> Try again</button></div>}
-          {!pdfLoading && !pdfError && <><canvas ref={canvasRef} className="litrova-pdf-canvas" aria-label={`Page ${page} of ${pageCount}`}/>{rendering && <span className="pdf-rendering-indicator">Rendering page…</span>}</>}
+          {!pdfLoading && !pdfError && <div className="litrova-pdf-document" onMouseUp={captureSelection} onKeyUp={captureSelection}>
+            <canvas ref={canvasRef} className="litrova-pdf-canvas" aria-label={`Page ${page} of ${pageCount}`}/>
+            <div ref={textLayerRef} className="litrova-pdf-text-layer"/>
+          </div>}
+          {rendering && <span className="pdf-rendering-indicator">Rendering page…</span>}
         </div>
         <div className="page-controls">
           <button className="button-outline" disabled={page <= 1 || pdfLoading || !!pdfError} onClick={() => goToPage(page - 1)}>← Previous</button>
@@ -795,9 +964,10 @@ function ReaderPage({ book, notify, onPageCount }) {
       <aside className="reader-notes">
         <span className="eyebrow">YOUR NOTES</span>
         <b>Keep a thought</b>
+        {selectedText && <div className="selected-passage"><div><Quote size={14}/> SELECTED PASSAGE</div><p>{selectedText}</p><button type="button" className="clear-selection" onClick={()=>setSelectedText('')}>Clear passage</button></div>}
         <textarea placeholder={`Write a note about page ${page}...`} value={note} onChange={event => setNote(event.target.value)}/>
-        <button className="button-solid" onClick={saveNote} disabled={!note.trim()}>Save note</button>
-        <p>Notes are saved in this browser and appear in My Workspace.</p>
+        <button className="button-solid" onClick={saveNote} disabled={!note.trim() && !selectedText.trim()}>Save to My Workspace</button>
+        <p>Select text in the PDF, then add your own thought. Both are saved together.</p>
       </aside>
     </div>
   </div>;
@@ -1413,19 +1583,41 @@ function VoicePage({ book }) { const [listening,setListening]=useState(false);re
 
 
 function WorkspacePage({ books }) {
-  const notes = JSON.parse(localStorage.getItem('litrova_notes') || '[]');
-  const bookmarks = JSON.parse(localStorage.getItem('litrova_bookmarks') || '[]');
+  let storedNotes = [];
+  let storedBookmarks = [];
+  try { storedNotes = JSON.parse(localStorage.getItem('litrova_notes') || '[]'); } catch { /* ignore malformed local data */ }
+  try { storedBookmarks = JSON.parse(localStorage.getItem('litrova_bookmarks') || '[]'); } catch { /* ignore malformed local data */ }
+  const [notes, setNotes] = useState(storedNotes);
+  const [bookmarks] = useState(storedBookmarks);
   const [tab, setTab] = useState('notes');
   const bookMap = new Map(books.map(book => [String(book.id), book]));
+
+  useEffect(() => {
+    function refreshNotes() {
+      try { setNotes(JSON.parse(localStorage.getItem('litrova_notes') || '[]')); } catch { setNotes([]); }
+    }
+    window.addEventListener('storage', refreshNotes);
+    window.addEventListener('litrova-notes-updated', refreshNotes);
+    return () => {
+      window.removeEventListener('storage', refreshNotes);
+      window.removeEventListener('litrova-notes-updated', refreshNotes);
+    };
+  }, []);
+
   return <div className="page-stack">
     <PageIntro eyebrow="YOUR KNOWLEDGE, KEPT" title={<>A space for <em>what stays.</em></>} description="Bring together the passages, thoughts and answers worth returning to."/>
     <div className="workspace-tabs">{[{k:'notes',t:'Notes',i:NotebookTabs},{k:'bookmarks',t:'Bookmarks',i:Bookmark},{k:'highlights',t:'Highlights',i:Highlighter},{k:'answers',t:'Saved answers',i:Sparkles}].map(item=><button className={tab===item.k?'active':''} key={item.k} onClick={()=>setTab(item.k)}><item.i size={16}/>{item.t}</button>)}</div>
-    {tab === 'notes' ? notes.length ? <div className="saved-notes">{notes.map((item,index)=><article key={`${item.bookId}-${item.createdAt}-${index}`}><span className="eyebrow">{item.bookTitle} · PAGE {item.page}</span><p>{item.note}</p><small>{new Date(item.createdAt).toLocaleDateString()}</small></article>)}</div> : <EmptyState icon={NotebookTabs} title="Your notes will live here." text="Save thoughts from Reader Studio and return to them whenever you need."/> :
+    {tab === 'notes' ? notes.length ? <div className="saved-notes">{notes.map((item,index)=><article key={item.id || `${item.bookId}-${item.createdAt}-${index}`}>
+      <span className="eyebrow">{item.bookTitle} · PAGE {item.page}</span>
+      {item.selectedText && <blockquote className="saved-passage">{item.selectedText}</blockquote>}
+      {item.note && <p>{item.note}</p>}
+      <small>{new Date(item.createdAt).toLocaleDateString()}</small>
+      {bookMap.has(String(item.bookId)) && <Link className="text-action" to={`/reader/${item.bookId}?page=${item.page}`}>Return to this page <ArrowUpRight size={14}/></Link>}
+    </article>)}</div> : <EmptyState icon={NotebookTabs} title="Your notes will live here." text="Select a passage in Reader Studio, add a thought, and save it here."/> :
     tab === 'bookmarks' ? bookmarks.length ? <div className="saved-notes">{bookmarks.map((item,index)=><article className="saved-bookmark" key={`${item.bookId}-${item.page}-${index}`}><span className="eyebrow">{item.bookTitle} · PAGE {item.page}</span><p>Bookmarked page {item.page}</p>{bookMap.has(String(item.bookId)) && <Link className="text-action" to={`/reader/${item.bookId}?page=${item.page}`}>Open this page <ArrowUpRight size={14}/></Link>}</article>)}</div> : <EmptyState icon={Bookmark} title="No bookmarked pages yet." text="Bookmark a page in Reader Studio to find it here."/> :
     <EmptyState icon={tab==='highlights'?Highlighter:Sparkles} title="Nothing saved here yet." text="This collection will fill up as you explore and save useful ideas."/>}
   </div>;
 }
-
 
 
 function SettingsPage({ user, theme, setTheme }) { const [tab,setTab]=useState('profile');return <div className="page-stack"><PageIntro eyebrow="YOUR ACCOUNT" title={<>Make this space<br/><em>your own.</em></>} description="Manage your profile and reading preferences."/><div className="settings-layout"><nav>{[{k:'profile',t:'Profile',i:UserRound},{k:'appearance',t:'Appearance',i:Sun},{k:'preferences',t:'Preferences',i:SlidersHorizontal},{k:'account',t:'Account',i:Settings}].map(x=><button className={tab===x.k?'active':''} key={x.k} onClick={()=>setTab(x.k)}><x.i size={17}/>{x.t}</button>)}</nav><section className="settings-panel"><span className="eyebrow">{tab.toUpperCase()}</span>{tab==='profile'?<><h2>Profile details</h2><div className="profile-detail"><span className="avatar large">{user.name?.[0]?.toUpperCase()||'L'}</span><div><b>{user.name||'Reader'}</b><small>{user.email}</small></div></div><p className="muted">Your account details are managed securely by Litrova.</p></>:tab==='appearance'?<><h2>Appearance</h2><p>Choose the reading environment that feels right.</p><div className="theme-options"><button className={theme==='light'?'selected':''} onClick={()=>setTheme('light')}><Sun size={19}/> Warm light</button><button className={theme==='dark'?'selected':''} onClick={()=>setTheme('dark')}><Moon size={19}/> Dark mode</button></div></>:<><h2>{tab==='preferences'?'Reading preferences':'Account settings'}</h2><p className="muted">More controls will be added as the account and reading features are implemented.</p><div className="notice-line"><AlertCircle size={16}/> This section is part of the UI foundation; settings sync is not connected yet.</div></>}</section></div></div>; }
